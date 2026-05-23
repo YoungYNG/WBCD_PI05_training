@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Training outputs
+pi05/checkpoints/
+pi05/assets/
+pi05/training_data/
+pi05/processed_data/
+pi05/processed_data_eef/
+pi05/eval_outputs/
+pi05/debug_backups/
+
+# Logs and generated plots
+*.log
+*.png
+*.csv
+*.tar
+*.tar.gz
+*.zip
+
+# Local caches
+.cache/
+wandb/
+
