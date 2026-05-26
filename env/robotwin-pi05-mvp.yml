@@ -1,0 +1,11 @@
+name: robotwin_pi05_mvp
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - uv
+  - git
+  - git-lfs
+  - ffmpeg=7.1.*
+  - pkg-config
