@@ -683,7 +683,7 @@ _CONFIGS = [
         name="pi05_aloha_full_base",
         model=pi0_config.Pi0Config(pi05=True),
         data=LeRobotAlohaDataConfig(
-            repo_id="fold_repo",#x 此处改为自己的repo_id名称
+            repo_id="your_lerobot_repo",#x 此处改为自己的repo_id名称
             adapt_to_pi=False,
             repack_transforms=_transforms.Group(inputs=[
                 _transforms.RepackTransform({
@@ -702,8 +702,9 @@ _CONFIGS = [
             ),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        num_train_steps=50_000,
-        batch_size=32,
+        num_train_steps=20_000,
+        batch_size=40,
+        num_workers=16,
         log_interval=100,
         save_interval=5_000,
         keep_period=5_000,

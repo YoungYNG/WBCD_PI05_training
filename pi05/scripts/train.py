@@ -1,6 +1,9 @@
 import dataclasses
 import functools
+import csv
 import logging
+import os
+import pathlib
 import platform
 import time
 from typing import Any
@@ -26,6 +29,57 @@ import openpi.training.optimizer as _optimizer
 import openpi.training.sharding as sharding
 import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
+
+
+def _loss_plot_enabled() -> bool:
+    value = os.environ.get("OPENPI_PLOT_LOSS", "1").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _update_loss_plot(loss_rows: list[dict[str, float | int]], output_dir: epath.Path, *, avg_window: int = 50) -> None:
+    if not loss_rows:
+        return
+
+    # Keep plotting isolated from training. If matplotlib is slow or unavailable, training should continue.
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        output_path = epath.Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        csv_path = output_path / "loss_points.csv"
+        png_path = output_path / "loss_curve.png"
+
+        with pathlib.Path(os.fspath(csv_path)).open("w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["step", "loss", "grad_norm", "param_norm"])
+            writer.writeheader()
+            writer.writerows(loss_rows)
+
+        steps = [int(row["step"]) for row in loss_rows]
+        losses = [float(row["loss"]) for row in loss_rows]
+        avg_window = min(avg_window, max(1, len(losses)))
+        avg_losses = []
+        for i in range(len(losses)):
+            values = losses[max(0, i - avg_window + 1) : i + 1]
+            avg_losses.append(sum(values) / len(values))
+
+        plt.figure(figsize=(11, 5.8), dpi=170)
+        plt.plot(steps, losses, linewidth=1.1, alpha=0.6, label="loss")
+        plt.scatter(steps, losses, s=7, alpha=0.65)
+        if len(losses) >= 5:
+            plt.plot(steps, avg_losses, linewidth=2.2, label=f"trailing avg {avg_window} pts")
+        plt.title("Training Loss")
+        plt.xlabel("Step")
+        plt.ylabel("Loss")
+        plt.grid(True, alpha=0.25)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(png_path)
+        plt.close()
+    except Exception:
+        logging.exception("Failed to update loss plot")
 
 
 def init_logging():
@@ -279,12 +333,18 @@ def main(config: _config.TrainConfig):
 
     console_infos = []
     wandb_infos = []
+    plot_infos = []
+    loss_rows: list[dict[str, float | int]] = []
+    loss_plot_dir = epath.Path(config.checkpoint_dir) / "plots"
+    plot_loss = _loss_plot_enabled()
     last_console_log_time = time.monotonic()
     for step in pbar:
         with sharding.set_mesh(mesh):
             train_state, info = ptrain_step(train_rng, train_state, batch)
         console_infos.append(info)
         wandb_infos.append(info)
+        if plot_loss:
+            plot_infos.append(info)
 
         now = time.monotonic()
         should_console_log = (now - last_console_log_time) >= 10.0 or step % config.log_interval == 0
@@ -296,6 +356,19 @@ def main(config: _config.TrainConfig):
             pbar.write(f"Step {step}: {info_str}")
             console_infos = []
             last_console_log_time = now
+
+        if plot_loss and (step % 5 == 0 or step == config.num_train_steps - 1):
+            stacked_plot_infos = common_utils.stack_forest(plot_infos)
+            reduced_plot_info = jax.device_get(jax.tree.map(jnp.mean, stacked_plot_infos))
+            if all(k in reduced_plot_info for k in ("loss", "grad_norm", "param_norm")):
+                loss_rows.append({
+                    "step": step,
+                    "loss": float(reduced_plot_info["loss"]),
+                    "grad_norm": float(reduced_plot_info["grad_norm"]),
+                    "param_norm": float(reduced_plot_info["param_norm"]),
+                })
+                _update_loss_plot(loss_rows, loss_plot_dir)
+            plot_infos = []
 
         if step % config.log_interval == 0:
             stacked_wandb_infos = common_utils.stack_forest(wandb_infos)

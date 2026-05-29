@@ -69,7 +69,8 @@ dev = [
 
 
 [tool.uv]
-environments = ["sys_platform == 'linux'"]
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+override-dependencies = ["av<13"]
 
 [tool.uv.sources]
 openpi-client = { workspace = true }

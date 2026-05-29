@@ -10,11 +10,6 @@ REPO_ID=""
 EXP_NAME=""
 PROMPT="fold the cloth"
 GPUS="0,1,2,3"
-NUM_STEPS="50000"
-SAVE_INTERVAL="5000"
-KEEP_PERIOD="5000"
-BATCH_SIZE="32"
-FSDP_DEVICES="4"
 LOG_PATH=""
 OPENPI_DATA_HOME_VALUE="${OPENPI_DATA_HOME:-${ROOT_DIR}/.cache/openpi}"
 HF_HOME_VALUE="${HF_HOME:-${ROOT_DIR}/.cache/huggingface}"
@@ -30,22 +25,18 @@ Usage:
     --exp-name fold_full_bs32_fsdp4 \
     [--prompt "fold the cloth"] \
     [--gpus 0,1,2,3] \
-    [--num-steps 50000] \
-    [--save-interval 5000] \
-    [--keep-period 5000] \
-    [--batch-size 32] \
-    [--fsdp-devices 4] \
     [--log-path ./logs/train.log]
 
 This script performs:
   1. RoboTwin/ARX qpos HDF5 -> ALOHA raw layout.
-  2. ALOHA raw layout -> LeRobot repo.
+  2. ALOHA raw layout -> LeRobot repo with 224x224 image features.
   3. Compute normalization stats.
   4. Start pi05 full fine-tuning.
 
 Before running, make sure pi05/src/openpi/training/config.py has:
   name="pi05_aloha_full_base"
   repo_id="<your --repo-id>"
+  num_train_steps / batch_size / fsdp_devices / save_interval set as desired.
 EOF
 }
 
@@ -57,11 +48,6 @@ while [[ $# -gt 0 ]]; do
     --exp-name) EXP_NAME="$2"; shift 2 ;;
     --prompt) PROMPT="$2"; shift 2 ;;
     --gpus) GPUS="$2"; shift 2 ;;
-    --num-steps) NUM_STEPS="$2"; shift 2 ;;
-    --save-interval) SAVE_INTERVAL="$2"; shift 2 ;;
-    --keep-period) KEEP_PERIOD="$2"; shift 2 ;;
-    --batch-size) BATCH_SIZE="$2"; shift 2 ;;
-    --fsdp-devices) FSDP_DEVICES="$2"; shift 2 ;;
     --log-path) LOG_PATH="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 2 ;;
@@ -85,11 +71,29 @@ echo "[1/4] Convert source HDF5 to ALOHA raw layout"
 
 echo "[2/4] Convert ALOHA raw layout to LeRobot repo: ${REPO_ID}"
 cd "${PI05_DIR}"
-"${PI05_DIR}/.venv/bin/python" examples/aloha_real/convert_aloha_data_to_lerobot_robotwin.py \
-  --raw_dir "${RAW_DIR}" \
-  --repo_id "${REPO_ID}"
+HF_HOME="${HF_HOME_VALUE}" \
+HF_LEROBOT_HOME="${HF_LEROBOT_HOME_VALUE}" \
+PYTHONUNBUFFERED=1 \
+OMP_NUM_THREADS=1 \
+MKL_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 \
+"${PI05_DIR}/.venv/bin/python" examples/aloha_real/convert_aloha_data_to_lerobot_robotwin_resume_224.py \
+  --raw-dir "${RAW_DIR}" \
+  --repo-id "${REPO_ID}" \
+  --task "${PROMPT}" \
+  --order-mode numeric \
+  --dataset-config.image-writer-processes 32 \
+  --dataset-config.image-writer-threads 2
 
 echo "[3/4] Compute normalization stats for pi05_aloha_full_base"
+HF_HOME="${HF_HOME_VALUE}" \
+HF_LEROBOT_HOME="${HF_LEROBOT_HOME_VALUE}" \
+PYTHONUNBUFFERED=1 \
+OMP_NUM_THREADS=1 \
+MKL_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 \
 "${PI05_DIR}/.venv/bin/python" scripts/compute_norm_stats.py \
   --config-name pi05_aloha_full_base
 
@@ -98,8 +102,13 @@ export CUDA_VISIBLE_DEVICES="${GPUS}"
 export OPENPI_DATA_HOME="${OPENPI_DATA_HOME_VALUE}"
 export HF_HOME="${HF_HOME_VALUE}"
 export HF_LEROBOT_HOME="${HF_LEROBOT_HOME_VALUE}"
-export XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.9}"
+export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
 export PYTHONUNBUFFERED=1
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
+export OPENPI_PLOT_LOSS="${OPENPI_PLOT_LOSS:-1}"
 
 mkdir -p "${OPENPI_DATA_HOME}" "${HF_HOME}" "${HF_LEROBOT_HOME}"
 if [[ -n "${LOG_PATH}" ]]; then
@@ -107,15 +116,10 @@ if [[ -n "${LOG_PATH}" ]]; then
 fi
 
 TRAIN_CMD=(
-  "${PI05_DIR}/.venv/bin/python" scripts/train.py
+  bash finetune.sh
   pi05_aloha_full_base
-  --exp-name="${EXP_NAME}"
-  --overwrite
-  --num-train-steps="${NUM_STEPS}"
-  --save-interval="${SAVE_INTERVAL}"
-  --keep-period="${KEEP_PERIOD}"
-  --batch-size="${BATCH_SIZE}"
-  --fsdp-devices="${FSDP_DEVICES}"
+  "${EXP_NAME}"
+  "${GPUS}"
 )
 
 if [[ -n "${LOG_PATH}" ]]; then
